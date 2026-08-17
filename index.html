@@ -1,0 +1,1086 @@
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Image Converter</title>
+<meta
+  name="description"
+  content="Run an image through a simulated camera-capture pipeline, entirely in the browser."
+/>
+<style>
+  /* ==========================================================================
+   Image Converter — instrument panel
+   Palette taken from the bloom on a multicoated lens element: magenta and
+   cyan-green reflections over the matte black of a lens barrel. Magenta
+   consistently means "source / as generated", cyan means "output / captured".
+   Dark surround throughout, because you cannot judge an image against a
+   bright one.
+   ========================================================================== */
+
+:root {
+  --vac: #0b0d11; /* page ground */
+  --barrel: #12151b; /* panel */
+  --barrel-2: #171b23; /* raised */
+  --engrave: #262c37; /* rules */
+  --engrave-soft: #1c212a;
+  --glass: #e6e9ef; /* primary text */
+  --etch: #949eb0; /* secondary */
+  --dim: #616b7c; /* tertiary */
+  --coat-m: #c061d8; /* source */
+  --coat-m-dim: #6d3480;
+  --coat-c: #45cfc4; /* output */
+  --coat-c-dim: #24756f;
+  --meter: #f0a63c; /* caution */
+
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono",
+    "Cascadia Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  --rail-w: 336px;
+  --r: 3px;
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Author `display` declarations outrank the UA's [hidden] rule, and several
+   elements below set one. Keep the attribute authoritative. */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--vac);
+  color: var(--glass);
+  font-family: var(--sans);
+  font-size: 13.5px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2 {
+  margin: 0;
+  font-weight: 400;
+}
+
+button,
+input,
+a {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 1px solid var(--coat-c);
+  outline-offset: 2px;
+}
+
+/* --- shell ---------------------------------------------------------------- */
+.frame {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--engrave);
+  background: linear-gradient(180deg, #14171e, var(--vac));
+}
+
+.mark {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.iris {
+  width: 21px;
+  height: 21px;
+  flex: none;
+  fill: none;
+  stroke: var(--coat-m);
+  stroke-width: 1.1;
+  stroke-linejoin: round;
+  opacity: 0.9;
+}
+
+.mark h1 {
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--glass);
+}
+
+.bar-note {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.dot-live {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--coat-c);
+  box-shadow: 0 0 7px var(--coat-c);
+}
+
+.split {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--rail-w);
+  min-height: 0;
+}
+
+/* --- viewport ------------------------------------------------------------- */
+.stage-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-right: 1px solid var(--engrave);
+}
+
+.viewport {
+  position: relative;
+  flex: 1;
+  min-height: 340px;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  /* Faint focusing-screen grid, so a transparent or flat image still reads. */
+  background-image: linear-gradient(var(--engrave-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--engrave-soft) 1px, transparent 1px);
+  background-size: 44px 44px;
+  background-position: center;
+}
+
+.dropzone {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--engrave);
+  border-radius: var(--r);
+  transition: border-color 0.16s var(--ease), background 0.16s var(--ease);
+}
+
+.viewport.dragging .dropzone {
+  border-color: var(--coat-m);
+  background: rgba(192, 97, 216, 0.05);
+}
+
+.dz-inner {
+  text-align: center;
+  padding: 20px;
+}
+
+.dz-lead {
+  margin: 0 0 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--etch);
+}
+
+.dz-sub {
+  margin: 0 0 18px;
+  color: var(--dim);
+}
+
+.dz-formats {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: #454e5d;
+}
+
+.compare {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+  line-height: 0;
+  touch-action: none;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+
+.compare .layer {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 240px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+.after-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  clip-path: inset(0 0 0 50%);
+}
+
+.after-clip .layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.wipe {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.75);
+  pointer-events: none;
+}
+
+.wipe-grip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 50%;
+  background: rgba(11, 13, 17, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.wipe-grip::before,
+.wipe-grip::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  margin-top: -2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.85);
+  border-right: 1px solid rgba(255, 255, 255, 0.85);
+}
+
+.wipe-grip::before {
+  left: 7px;
+  transform: rotate(-135deg);
+}
+
+.wipe-grip::after {
+  right: 7px;
+  transform: rotate(45deg);
+}
+
+/* The range input is the real control; it sits invisibly over the image so
+   the wipe is draggable by pointer and by keyboard alike. */
+.wipe-range {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: ew-resize;
+  appearance: none;
+  background: transparent;
+}
+
+.wipe-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 40px;
+  height: 100%;
+}
+
+.wipe-range::-moz-range-thumb {
+  width: 40px;
+  height: 100%;
+  border: 0;
+  background: transparent;
+}
+
+.wipe-range:focus-visible + .vp-tag-l,
+.wipe-range:focus-visible ~ .wipe {
+  background: var(--coat-c);
+}
+
+.vp-tag {
+  position: absolute;
+  top: 10px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 2px;
+  background: rgba(11, 13, 17, 0.72);
+  pointer-events: none;
+}
+
+.vp-tag-l {
+  left: 10px;
+  color: var(--coat-m);
+  border: 1px solid var(--coat-m-dim);
+}
+
+.vp-tag-r {
+  right: 10px;
+  color: var(--coat-c);
+  border: 1px solid var(--coat-c-dim);
+}
+
+.scrim {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(11, 13, 17, 0.55);
+  backdrop-filter: blur(1px);
+}
+
+.scrim-text {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--etch);
+}
+
+/* --- capture chain -------------------------------------------------------- */
+.path {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin: 0;
+  padding: 0 20px;
+  list-style: none;
+  height: 46px;
+  border-top: 1px solid var(--engrave);
+  background: var(--barrel);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.path::-webkit-scrollbar {
+  display: none;
+}
+
+.path li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 22px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: #4c5565;
+  transition: color 0.2s var(--ease);
+}
+
+/* The connector is the signal path: it only exists between stages. */
+.path li:not(:last-child)::after {
+  content: "";
+  width: 22px;
+  height: 1px;
+  margin-left: 14px;
+  background: var(--engrave);
+}
+
+.node {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border: 1px solid #3b4453;
+  border-radius: 50%;
+  transition: all 0.2s var(--ease);
+}
+
+.path li.done {
+  color: var(--etch);
+}
+
+.path li.done .node {
+  border-color: var(--coat-c-dim);
+  background: var(--coat-c-dim);
+}
+
+.path li.active {
+  color: var(--coat-m);
+}
+
+.path li.active .node {
+  border-color: var(--coat-m);
+  background: var(--coat-m);
+  box-shadow: 0 0 9px var(--coat-m);
+}
+
+/* --- rail ----------------------------------------------------------------- */
+.rail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-y: auto;
+  background: var(--barrel);
+}
+
+.panel {
+  padding: 16px 18px 18px;
+  border-bottom: 1px solid var(--engrave);
+}
+
+.panel-h {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.panel-h-note {
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  color: #454e5d;
+  text-transform: none;
+}
+
+.ctl + .ctl {
+  margin-top: 16px;
+}
+
+.ctl-l {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 7px;
+  font-size: 12px;
+  color: var(--etch);
+}
+
+.ctl-out {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--glass);
+}
+
+.ctl-hint {
+  margin: 7px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--dim);
+  transition: color 0.16s var(--ease);
+}
+
+/* The combination is legal but counterproductive; say so without blocking it. */
+.ctl-hint-warn {
+  color: var(--meter);
+}
+
+/* segmented control */
+.seg {
+  display: flex;
+  border: 1px solid var(--engrave);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+.seg button {
+  flex: 1;
+  padding: 7px 4px;
+  border: 0;
+  border-right: 1px solid var(--engrave);
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  cursor: pointer;
+  transition: background 0.14s var(--ease), color 0.14s var(--ease);
+}
+
+.seg button:last-child {
+  border-right: 0;
+}
+
+.seg button:hover {
+  background: var(--barrel-2);
+  color: var(--etch);
+}
+
+.seg button[aria-pressed="true"] {
+  background: var(--barrel-2);
+  color: var(--coat-m);
+  box-shadow: inset 0 -2px 0 var(--coat-m);
+}
+
+/* slider */
+input[type="range"]:not(.wipe-range) {
+  width: 100%;
+  height: 18px;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"]:not(.wipe-range)::-webkit-slider-runnable-track {
+  height: 2px;
+  background: var(--engrave);
+}
+
+input[type="range"]:not(.wipe-range)::-moz-range-track {
+  height: 2px;
+  background: var(--engrave);
+}
+
+input[type="range"]:not(.wipe-range)::-webkit-slider-thumb {
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: var(--coat-m);
+}
+
+input[type="range"]:not(.wipe-range)::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--coat-m);
+}
+
+/* switch */
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch-track {
+  position: relative;
+  width: 30px;
+  height: 16px;
+  flex: none;
+  border: 1px solid var(--engrave);
+  border-radius: 9px;
+  background: var(--vac);
+  transition: all 0.16s var(--ease);
+}
+
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--dim);
+  transition: all 0.16s var(--ease);
+}
+
+.switch input:checked + .switch-track {
+  border-color: var(--coat-c-dim);
+}
+
+.switch input:checked + .switch-track .switch-knob {
+  left: 16px;
+  background: var(--coat-c);
+  box-shadow: 0 0 7px var(--coat-c);
+}
+
+.switch input:focus-visible + .switch-track {
+  outline: 1px solid var(--coat-c);
+  outline-offset: 2px;
+}
+
+.switch-text {
+  font-size: 12px;
+  color: var(--etch);
+}
+
+/* --- readout -------------------------------------------------------------- */
+.readout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  margin: 0;
+  background: var(--engrave);
+  border: 1px solid var(--engrave);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+.readout > div {
+  padding: 9px 11px;
+  background: var(--barrel);
+}
+
+.readout dt {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.readout dd {
+  margin: 3px 0 0;
+  font-family: var(--mono);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  color: var(--glass);
+}
+
+.readout dd .unit {
+  font-size: 10px;
+  color: var(--dim);
+  margin-left: 2px;
+}
+
+/* --- spectra (the signature) ---------------------------------------------- */
+.spectra {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.spec {
+  margin: 0;
+}
+
+.spec canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  border: 1px solid var(--engrave);
+  border-radius: 2px;
+  background: var(--vac);
+  image-rendering: pixelated;
+}
+
+.spec figcaption {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.spec figcaption b {
+  font-weight: 400;
+  font-size: 12px;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.spec-src figcaption b {
+  color: var(--coat-m);
+}
+
+.spec-out figcaption b {
+  color: var(--coat-c);
+}
+
+.spec-legend {
+  margin: 12px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+/* --- actions -------------------------------------------------------------- */
+/* Pinned to the foot of the rail: the download is the point of the page and
+   shouldn't require scrolling past the readouts to reach. */
+.actions {
+  position: sticky;
+  bottom: 0;
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--engrave);
+  background: var(--barrel);
+}
+
+.btn {
+  flex: 1;
+  min-width: 96px;
+  padding: 9px 12px;
+  border: 1px solid var(--engrave);
+  border-radius: var(--r);
+  background: var(--barrel-2);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: center;
+  text-decoration: none;
+  color: var(--etch);
+  cursor: pointer;
+  transition: all 0.14s var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  border-color: #3a4251;
+  color: var(--glass);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  flex-basis: 100%;
+  border-color: var(--coat-c-dim);
+  background: rgba(69, 207, 196, 0.09);
+  color: var(--coat-c);
+}
+
+.btn-primary:hover {
+  border-color: var(--coat-c);
+  background: rgba(69, 207, 196, 0.15);
+  color: var(--coat-c);
+}
+
+.btn-quiet {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.linkish {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--coat-c);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.linkish.tiny {
+  display: inline-block;
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.linkish.tiny:hover {
+  color: var(--etch);
+}
+
+.disclaimer {
+  margin: 0;
+  padding: 16px 18px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #4c5565;
+}
+
+/* --- toast ---------------------------------------------------------------- */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  padding: 9px 15px;
+  border: 1px solid var(--meter);
+  border-radius: var(--r);
+  background: #1d1710;
+  color: var(--meter);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  max-width: min(560px, calc(100vw - 32px));
+  z-index: 20;
+}
+
+/* --- responsive ----------------------------------------------------------- */
+/* On a desktop window the shell owns the viewport height and the rail scrolls
+   inside it, so the capture chain under the image stays on screen. Below the
+   breakpoint the columns stack and the page scrolls normally instead. */
+@media (min-width: 901px) {
+  .frame {
+    height: 100%;
+  }
+
+  .split {
+    overflow: hidden;
+  }
+
+  .stage-col {
+    min-height: 0;
+  }
+
+  .viewport {
+    min-height: 0;
+  }
+
+  /* The viewport now has a definite height, so the image can just fill it. */
+  .compare,
+  .compare .layer {
+    max-height: 100%;
+  }
+}
+
+@media (max-width: 900px) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .stage-col {
+    border-right: 0;
+  }
+
+  .rail {
+    border-top: 1px solid var(--engrave);
+    overflow-y: visible;
+  }
+
+  .compare .layer {
+    max-height: 52vh;
+  }
+
+  .viewport {
+    min-height: 260px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+</style>
+
+<div class="frame">
+  <header class="bar">
+    <div class="mark">
+      <svg class="iris" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <circle cx="12" cy="12" r="10.2" />
+        <path d="M12 1.8 L12 12 L20.8 7" />
+        <path d="M20.8 7 L12 12 L20.8 17" />
+        <path d="M20.8 17 L12 12 L12 22.2" />
+        <path d="M12 22.2 L12 12 L3.2 17" />
+        <path d="M3.2 17 L12 12 L3.2 7" />
+        <path d="M3.2 7 L12 12 L12 1.8" />
+      </svg>
+      <h1>Image Converter</h1>
+    </div>
+    <p class="bar-note">
+      <span class="dot-live" aria-hidden="true"></span>
+      Runs on this page. Nothing is uploaded.
+    </p>
+  </header>
+
+  <main class="split">
+    <section class="stage-col">
+      <div class="viewport" id="viewport">
+        <div class="dropzone" id="dropzone">
+          <div class="dz-inner">
+            <p class="dz-lead">Drop an image to convert</p>
+            <p class="dz-sub">or <button type="button" class="linkish" id="pickBtn">choose a file</button>, or paste one</p>
+            <p class="dz-formats">PNG · JPEG · WebP · AVIF · GIF · BMP</p>
+          </div>
+        </div>
+
+        <div class="compare" id="compare" hidden>
+          <canvas id="canvasBefore" class="layer"></canvas>
+          <div class="after-clip" id="afterClip">
+            <canvas id="canvasAfter" class="layer"></canvas>
+          </div>
+          <div class="wipe" id="wipe">
+            <div class="wipe-grip" aria-hidden="true"></div>
+          </div>
+          <input
+            type="range"
+            id="wipeRange"
+            class="wipe-range"
+            min="0"
+            max="100"
+            value="50"
+            step="0.1"
+            aria-label="Compare source and output"
+          />
+          <span class="vp-tag vp-tag-l">Source</span>
+          <span class="vp-tag vp-tag-r">Output</span>
+        </div>
+
+        <div class="scrim" id="scrim" hidden><span class="scrim-text" id="scrimText">Working</span></div>
+      </div>
+
+      <ol class="path" id="path" aria-label="Capture chain">
+        <li data-stage="geometry"><span class="node"></span>Geometry</li>
+        <li data-stage="optics"><span class="node"></span>Optics</li>
+        <li data-stage="sensor"><span class="node"></span>Sensor</li>
+        <li data-stage="isp"><span class="node"></span>ISP</li>
+        <li data-stage="jpeg"><span class="node"></span>JPEG</li>
+      </ol>
+    </section>
+
+    <aside class="rail">
+      <section class="panel">
+        <h2 class="panel-h">Controls</h2>
+
+        <div class="ctl">
+          <label class="ctl-l" id="lblStrength">Strength</label>
+          <div class="seg" role="group" aria-labelledby="lblStrength" id="segStrength">
+            <button type="button" data-v="light">Light</button>
+            <button type="button" data-v="medium">Medium</button>
+            <button type="button" data-v="heavy">Heavy</button>
+          </div>
+        </div>
+
+        <div class="ctl">
+          <label class="ctl-l" id="lblScale">Output scale</label>
+          <div class="seg" role="group" aria-labelledby="lblScale" id="segScale">
+            <button type="button" data-v="1">100%</button>
+            <button type="button" data-v="0.92">92%</button>
+            <button type="button" data-v="0.83">83%</button>
+            <button type="button" data-v="0.75">75%</button>
+          </div>
+          <p class="ctl-hint">Resizing disturbs the upsampling fingerprint more than any other control.</p>
+        </div>
+
+        <div class="ctl">
+          <label class="ctl-l" for="preserve">Detail</label>
+          <label class="switch">
+            <input type="checkbox" id="preserve" checked />
+            <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
+            <span class="switch-text">Preserve resolution</span>
+          </label>
+          <p class="ctl-hint" id="preserveHint">
+            Keeps the downscale step out of the chain and raises quality to 96.
+            Helps at medium and heavy; at light it weakens the effect for
+            nothing.
+          </p>
+        </div>
+
+        <div class="ctl">
+          <label class="ctl-l" for="quality">
+            Quality <output class="ctl-out" id="qualityOut">96</output>
+          </label>
+          <input type="range" id="quality" min="60" max="100" step="1" value="94" />
+          <button type="button" class="linkish tiny" id="qualityAuto">Match strength preset</button>
+        </div>
+
+        <div class="ctl">
+          <label class="ctl-l" id="lblPasses">JPEG generations</label>
+          <div class="seg" role="group" aria-labelledby="lblPasses" id="segPasses">
+            <button type="button" data-v="1">1</button>
+            <button type="button" data-v="2">2</button>
+            <button type="button" data-v="3">3</button>
+          </div>
+        </div>
+
+        <div class="ctl">
+          <label class="ctl-l" for="pinCamera">Sensor</label>
+          <label class="switch">
+            <input type="checkbox" id="pinCamera" />
+            <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
+            <span class="switch-text">Reuse one sensor</span>
+          </label>
+          <p class="ctl-hint" id="seedHint">Each run gets a fresh noise pattern.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel-h">Measurements</h2>
+        <dl class="readout" id="readout">
+          <div><dt>PSNR</dt><dd id="mPsnr">—</dd></div>
+          <div><dt>SSIM</dt><dd id="mSsim">—</dd></div>
+          <div><dt>Size</dt><dd id="mSize">—</dd></div>
+          <div><dt>Pixels</dt><dd id="mDims">—</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel panel-spectra">
+        <h2 class="panel-h">
+          Frequency fingerprint
+          <span class="panel-h-note" id="mTime"></span>
+        </h2>
+        <div class="spectra">
+          <figure class="spec spec-src">
+            <canvas id="specBefore" width="256" height="256"></canvas>
+            <figcaption>Source <b id="pkBefore">—</b></figcaption>
+          </figure>
+          <figure class="spec spec-out">
+            <canvas id="specAfter" width="256" height="256"></canvas>
+            <figcaption>Output <b id="pkAfter">—</b></figcaption>
+          </figure>
+        </div>
+        <p class="spec-legend">
+          High-pass spectrum, origin centred. Generators leave a lattice of bright
+          periodic peaks; a camera leaves a smooth falloff. The number is how far
+          the brightest peaks sit above the spread — lower is more photographic.
+        </p>
+      </section>
+
+      <p class="disclaimer">
+        Simulates capture optics and sensor response. It does not remove C2PA
+        provenance manifests or embedded watermarks, and writes no EXIF.
+      </p>
+
+      <div class="actions">
+        <a class="btn btn-primary" id="download" download hidden>Download file</a>
+        <button type="button" class="btn" id="rerun" disabled>New sensor</button>
+        <button type="button" class="btn btn-quiet" id="reset" disabled>Clear</button>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<input type="file" id="fileInput" accept="image/*" hidden />
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script>
+  "use strict";(()=>{var Q=class{constructor(e){this.spare=null;let n=e>>>0||2654435769,r=()=>{n=n+2654435769>>>0;let o=n;return o=Math.imul(o^o>>>16,569420461)>>>0,o=Math.imul(o^o>>>15,1935289751)>>>0,(o^o>>>15)>>>0};this.s0=r(),this.s1=r(),this.s2=r(),this.s3=r()}nextUint(){let e=Math.imul(this.s1,5)>>>0,n=(e<<7|e>>>25)>>>0,r=Math.imul(n,9)>>>0,o=this.s1<<9>>>0;return this.s2^=this.s0,this.s3^=this.s1,this.s1^=this.s2,this.s0^=this.s3,this.s2^=o,this.s3=(this.s3<<11|this.s3>>>21)>>>0,r}next(){return this.nextUint()/4294967296}uniform(e,n){return e+(n-e)*this.next()}normal(){if(this.spare!==null){let o=this.spare;return this.spare=null,o}let e=0,n=0;for(;e===0;)e=this.next();for(;n===0;)n=this.next();let r=Math.sqrt(-2*Math.log(e));return this.spare=r*Math.sin(2*Math.PI*n),r*Math.cos(2*Math.PI*n)}fillNormal(e){for(let n=0;n<e.length;n++)e[n]=this.normal()}};function X(){let t=new Uint32Array(1);return crypto.getRandomValues(t),t[0]%2147483647}function B(t,e){return{data:new Float32Array(t*e*3),w:t,h:e}}function ht(t){if(t===0)return 1;let e=Math.PI*t;return Math.sin(e)/e}function jt(t){let e=Math.abs(t);return e>=3?0:ht(e)*ht(e/3)}function Ut(t){let n=Math.abs(t);return n<1?((-.5+2)*n-(-.5+3))*n*n+1:n<2?(((n-5)*n+8)*n-4)*-.5:0}function Ot(t){return t==="lanczos3"?{fn:jt,support:3}:{fn:Ut,support:2}}function gt(t,e,n){let{fn:r,support:o}=Ot(n),i=t/e,a=Math.max(1,i),u=o*a,l=Math.min(t,Math.ceil(u)*2+1),s=new Int32Array(e),p=new Float32Array(e*l);for(let m=0;m<e;m++){let f=(m+.5)*i,g=Math.floor(f-u+.5);g<0&&(g=0),g+l>t&&(g=Math.max(0,t-l)),s[m]=g;let h=0,M=m*l;for(let w=0;w<l;w++){let E=g+w,y=E<t?r((E+.5-f)/a):0;p[M+w]=y,h+=y}if(h!==0)for(let w=0;w<l;w++)p[M+w]/=h;else p[M]=1}return{starts:s,weights:p,span:l}}function C(t,e,n,r){if(e=Math.max(1,Math.round(e)),n=Math.max(1,Math.round(n)),e===t.w&&n===t.h)return{data:t.data.slice(),w:t.w,h:t.h};let o=gt(t.w,e,r),i=new Float32Array(e*t.h*3);for(let l=0;l<t.h;l++){let s=l*t.w*3,p=l*e*3;for(let m=0;m<e;m++){let f=o.starts[m],g=m*o.span,h=0,M=0,w=0;for(let y=0;y<o.span;y++){let d=o.weights[g+y];if(d===0)continue;let x=s+(f+y)*3;h+=d*t.data[x],M+=d*t.data[x+1],w+=d*t.data[x+2]}let E=p+m*3;i[E]=h,i[E+1]=M,i[E+2]=w}}let a=gt(t.h,n,r),u=B(e,n);for(let l=0;l<n;l++){let s=a.starts[l],p=l*a.span,m=l*e*3;for(let f=0;f<e;f++){let g=0,h=0,M=0;for(let E=0;E<a.span;E++){let y=a.weights[p+E];if(y===0)continue;let d=((s+E)*e+f)*3;g+=y*i[d],h+=y*i[d+1],M+=y*i[d+2]}let w=m+f*3;u.data[w]=g,u.data[w+1]=h,u.data[w+2]=M}}return u}function bt(t,e){let n=t*t,r=n*t;e[0]=.5*(-r+2*n-t),e[1]=.5*(3*r-5*n+2),e[2]=.5*(-3*r+4*n+t),e[3]=.5*(r-n)}function yt(t,e,n,r,o,i){let a=B(e,n),u=r*Math.PI/180,l=Math.cos(u),s=Math.sin(u),p=(t.w-1)/2,m=(t.h-1)/2,f=(e-1)/2,g=(n-1)/2,h=new Float32Array(4),M=new Float32Array(4);for(let w=0;w<n;w++)for(let E=0;E<e;E++){let y=E-f-o,d=w-g-i,x=l*y+s*d+p,T=-s*y+l*d+m,R=Math.floor(x),S=Math.floor(T);bt(x-R,h),bt(T-S,M);let F=0,H=0,P=0;for(let L=0;L<4;L++){let I=S-1+L;I=I<0?0:I>=t.h?t.h-1:I;let q=I*t.w*3,_=M[L];if(_===0)continue;let ft=0,pt=0,dt=0;for(let G=0;G<4;G++){let O=R-1+G;O=O<0?0:O>=t.w?t.w-1:O;let Y=q+O*3,J=h[G];ft+=J*t.data[Y],pt+=J*t.data[Y+1],dt+=J*t.data[Y+2]}F+=_*ft,H+=_*pt,P+=_*dt}let A=(w*e+E)*3;a.data[A]=F,a.data[A+1]=H,a.data[A+2]=P}return a}function Mt(t,e,n){e=Math.min(e,t.w),n=Math.min(n,t.h);let r=Math.floor((t.w-e)/2),o=Math.floor((t.h-n)/2),i=B(e,n);for(let a=0;a<n;a++){let u=((a+o)*t.w+r)*3;i.data.set(t.data.subarray(u,u+e*3),a*e*3)}return i}var V={light:{resampleFloor:.93,rotateDeg:.12,shiftPx:.4,ca:4e-4,vignette:.02,prnu:.0012,readNoise:.0018,shotNoise:.0045,tone:.035,wb:.003,quality:94},medium:{resampleFloor:.87,rotateDeg:.25,shiftPx:.6,ca:8e-4,vignette:.035,prnu:.002,readNoise:.003,shotNoise:.0075,tone:.055,wb:.005,quality:90},heavy:{resampleFloor:.78,rotateDeg:.45,shiftPx:.9,ca:.0016,vignette:.055,prnu:.0032,readNoise:.0048,shotNoise:.0115,tone:.08,wb:.008,quality:84}},W=96,xt=["geometry","optics","sensor","isp","jpeg"];function vt(t,e,n,r,o=!1){let{w:i,h:a}=t,u;if(o)u=t;else{let M=n.uniform(e.resampleFloor,e.resampleFloor+.05);u=C(t,Math.max(8,Math.floor(i*M)),Math.max(8,Math.floor(a*M)),"lanczos3")}let l=1+Math.max(.01,e.rotateDeg/12),s=C(u,Math.floor(i*l),Math.floor(a*l),"bicubic"),p=n.uniform(-e.rotateDeg,e.rotateDeg),m=n.uniform(-e.shiftPx,e.shiftPx),f=n.uniform(-e.shiftPx,e.shiftPx),g=yt(s,s.w,s.h,p,m,f),h=Mt(g,i,a);return Math.abs(r-1)>1e-6?C(h,Math.max(8,Math.floor(i*r)),Math.max(8,Math.floor(a*r)),"lanczos3"):h}function wt(t,e,n){let{w:r,h:o,data:i}=t;if(e.ca>0){let a=n.uniform(.5,1)*e.ca,u=B(r,o),l=(r-1)/2,s=(o-1)/2,p=[1+a,1,1-a];for(let m=0;m<3;m++){let f=1/p[m];for(let g=0;g<o;g++){let h=(g-s)*f+s,M=Math.floor(h),w=h-M,E=M<0?0:M>=o?o-1:M,y=M+1<0?0:M+1>=o?o-1:M+1;for(let d=0;d<r;d++){let x=(d-l)*f+l,T=Math.floor(x),R=x-T,S=T<0?0:T>=r?r-1:T,F=T+1<0?0:T+1>=r?r-1:T+1,H=i[(E*r+S)*3+m],P=i[(E*r+F)*3+m],A=i[(y*r+S)*3+m],L=i[(y*r+F)*3+m],I=H+(P-H)*R,q=A+(L-A)*R;u.data[(g*r+d)*3+m]=I+(q-I)*w}}}t=u}if(e.vignette>0){let a=(r-1)/2,u=(o-1)/2,l=0;for(let[p,m]of[[0,0],[0,r-1],[o-1,0],[o-1,r-1]]){let f=((m-a)/a)**2+((p-u)/u)**2;f>l&&(l=f)}let s=1/(l+1e-9);for(let p=0;p<o;p++){let m=((p-u)/u)**2;for(let f=0;f<r;f++){let g=(((f-a)/a)**2+m)*s,h=1-e.vignette*Math.pow(g,1.6),M=(p*r+f)*3;t.data[M]*=h,t.data[M+1]*=h,t.data[M+2]*=h}}}return t}function Et(t,e,n){let{w:r,h:o,data:i}=t,a=new Float32Array(r*o);for(let s=0;s<o;s++){let p=(s&1)===0;for(let m=0;m<r;m++){let f=(m&1)===0,g=p?f?0:1:f?1:2;a[s*r+m]=i[(s*r+m)*3+g]}}if(e.prnu>0)for(let s=0;s<a.length;s++)a[s]*=1+e.prnu*n.normal();for(let s=0;s<a.length;s++){let p=a[s]<0?0:a[s]>1?1:a[s],m=e.readNoise+e.shotNoise*Math.sqrt(p),f=a[s]+m*n.normal();a[s]=f<0?0:f>1?1:f}let u=B(r,o),l=(s,p)=>{let m=s<0?-s:s>=o?2*o-2-s:s,f=p<0?-p:p>=r?2*r-2-p:p;return a[m*r+f]};for(let s=0;s<o;s++){let p=(s&1)===0;for(let m=0;m<r;m++){let f=(m&1)===0,g=p?f?0:1:f?1:2,h=a[s*r+m],M=l(s-1,m),w=l(s+1,m),E=l(s,m+1),y=l(s,m-1),d=l(s-1,m-1),x=l(s-1,m+1),T=l(s+1,m-1),R=l(s+1,m+1),S=(M+w+E+y)*.25,F=(d+x+T+R)*.25,H=(M+w)*.5,P=(E+y)*.5,A,L,I;g===0?(A=h,L=S,I=F):g===2?(I=h,L=S,A=F):(L=h,p?(A=P,I=H):(A=H,I=P));let q=(s*r+m)*3;u.data[q]=A<0?0:A>1?1:A,u.data[q+1]=L<0?0:L>1?1:L,u.data[q+2]=I<0?0:I>1?1:I}}return u}function Tt(t,e,n){let r=[1,1,1];if(e.wb>0)for(let a=0;a<3;a++)r[a]=1+n.uniform(-e.wb,e.wb);let o=e.tone,i=t.data;for(let a=0;a<i.length;a+=3)for(let u=0;u<3;u++){let l=i[a+u]*r[u];if(l=l<0?0:l>1?1:l,l=.004+l*.994,o>0){let s=l*l*(3-2*l);l=(1-o)*l+o*s}i[a+u]=l<0?0:l>1?1:l}return t}function It(t){let{width:e,height:n,data:r}=t,o=B(e,n);for(let i=0,a=0;i<r.length;i+=4,a+=3)o.data[a]=r[i]/255,o.data[a+1]=r[i+1]/255,o.data[a+2]=r[i+2]/255;return o}function K(t){let e=new ImageData(t.w,t.h),n=e.data;for(let r=0,o=0;o<t.data.length;r+=4,o+=3)n[r]=Math.max(0,Math.min(255,Math.round(t.data[o]*255))),n[r+1]=Math.max(0,Math.min(255,Math.round(t.data[o+1]*255))),n[r+2]=Math.max(0,Math.min(255,Math.round(t.data[o+2]*255))),n[r+3]=255;return e}function At(t,e){let n=document.createElement("canvas");return n.width=t,n.height=e,n}function Z(t){let e=t.getContext("2d",{willReadFrequently:!0});if(!e)throw new Error("This browser wouldn't give us a 2D canvas context.");return e}async function tt(t){let e;try{e=await createImageBitmap(t)}catch{throw new Error("Couldn't decode that file as an image.")}try{let n=At(e.width,e.height),r=Z(n);return r.drawImage(e,0,0),It(r.getImageData(0,0,e.width,e.height))}finally{e.close()}}function zt(t,e){let n=At(t.w,t.h);return Z(n).putImageData(K(t),0,0),new Promise((r,o)=>{n.toBlob(i=>i?r(i):o(new Error("JPEG encoding failed.")),"image/jpeg",Math.max(1,Math.min(100,e))/100)})}async function Lt(t,e,n){let r=t,o=null,i=e;for(let a=0;a<Math.max(1,n);a++)o=await zt(r,i),r=await tt(o),i=Math.max(60,i-4);return{img:r,blob:o}}function et(t,e){t.width=e.w,t.height=e.h,Z(t).putImageData(K(e),0,0)}function D(t,e,n,r){let o=e+2*r,i=n+2*r,a=new Float64Array(o*i);for(let f=0;f<i;f++){let g=Math.min(n-1,Math.max(0,f-r));for(let h=0;h<o;h++){let M=Math.min(e-1,Math.max(0,h-r));a[f*o+h]=t[g*e+M]}}let u=o+1,l=new Float64Array(u*(i+1));for(let f=0;f<i;f++){let g=0;for(let h=0;h<o;h++)g+=a[f*o+h],l[(f+1)*u+(h+1)]=l[f*u+(h+1)]+g}let s=2*r+1,p=s*s,m=new Float64Array(e*n);for(let f=0;f<n;f++)for(let g=0;g<e;g++){let h=l[(f+s)*u+(g+s)]-l[f*u+(g+s)]-l[(f+s)*u+g]+l[f*u+g];m[f*e+g]=h/p}return m}function $t(t,e){let n=0;for(let r=0;r<t.data.length;r++){let o=t.data[r]-e.data[r];n+=o*o}return n/=t.data.length,n<=1e-12?1/0:10*Math.log10(1/n)}function rt(t){let e=new Float64Array(t.w*t.h);for(let n=0,r=0;r<t.data.length;n++,r+=3)e[n]=(t.data[r]+t.data[r+1]+t.data[r+2])/3;return e}function _t(t,e,n=5){let{w:r,h:o}=t,i=rt(t),a=rt(e),u=new Float64Array(r*o),l=new Float64Array(r*o),s=new Float64Array(r*o);for(let y=0;y<i.length;y++)u[y]=i[y]*i[y],l[y]=a[y]*a[y],s[y]=i[y]*a[y];let p=D(i,r,o,n),m=D(a,r,o,n),f=D(u,r,o,n),g=D(l,r,o,n),h=D(s,r,o,n),M=.01*.01,w=.03*.03,E=0;for(let y=0;y<i.length;y++){let d=p[y],x=m[y],T=f[y]-d*d,R=g[y]-x*x,S=h[y]-d*x;E+=(2*d*x+M)*(2*S+w)/((d*d+x*x+M)*(T+R+w)+1e-12)}return E/i.length}function St(t,e,n,r,o){for(let i=1,a=0;i<r;i++){let u=r>>1;for(;a&u;u>>=1)a^=u;if(a^=u,i<a){let l=n+i*o,s=n+a*o,p=t[l];t[l]=t[s],t[s]=p,p=e[l],e[l]=e[s],e[s]=p}}for(let i=2;i<=r;i<<=1){let a=-2*Math.PI/i,u=Math.cos(a),l=Math.sin(a);for(let s=0;s<r;s+=i){let p=1,m=0,f=i>>1;for(let g=0;g<f;g++){let h=n+(s+g)*o,M=n+(s+g+f)*o,w=t[h],E=e[h],y=t[M]*p-e[M]*m,d=t[M]*m+e[M]*p;t[h]=w+y,e[h]=E+d,t[M]=w-y,e[M]=E-d;let x=p*u-m*l;m=p*l+m*u,p=x}}}}function Gt(t,e){let n=Float64Array.from(t),r=new Float64Array(e*e);for(let a=0;a<e;a++)St(n,r,a*e,e,1);for(let a=0;a<e;a++)St(n,r,a,e,e);let o=new Float64Array(e*e),i=e>>1;for(let a=0;a<e;a++){let u=(a+i)%e;for(let l=0;l<e;l++){let s=(l+i)%e,p=a*e+l;o[u*e+s]=Math.log1p(Math.hypot(n[p],r[p]))}}return o}function nt(t,e){let n=e/100*(t.length-1),r=Math.floor(n),o=Math.ceil(n);return r===o?t[r]:t[r]+(t[o]-t[r])*(n-r)}function Rt(t){let e=Math.min(512,t.w,t.h),n=1<<Math.floor(Math.log2(e));if(n<32)return null;let r=rt(t),o=Math.floor((t.h-n)/2),i=Math.floor((t.w-n)/2),a=new Float64Array(n*n);for(let d=0;d<n;d++)for(let x=0;x<n;x++)a[d*n+x]=r[(d+o)*t.w+(x+i)];let u=D(a,n,n,1),l=new Float64Array(n);for(let d=0;d<n;d++)l[d]=.5-.5*Math.cos(2*Math.PI*d/(n-1));for(let d=0;d<n;d++)for(let x=0;x<n;x++){let T=d*n+x;a[T]=(a[T]-u[T])*l[d]*l[x]}let s=Gt(a,n),p=Float64Array.from(s).sort(),m=nt(p,50),f=n>>1;for(let d=f-2;d<=f+2;d++)for(let x=f-2;x<=f+2;x++)s[d*n+x]=m;let g=Float64Array.from(s).sort(),h=nt(g,50),M=nt(g,99.9),w=0;for(let d=0;d<s.length;d++)w+=s[d];w/=s.length;let E=0;for(let d=0;d<s.length;d++){let x=s[d]-w;E+=x*x}E/=s.length;let y=Math.sqrt(E);return{peakiness:(M-h)/(y+1e-9),plane:s,n}}function Ft(t,e){let n=t;(n.w!==e.w||n.h!==e.h)&&(n=C(t,e.w,e.h,"lanczos3"));let r=Rt(t),o=Rt(e);return{psnr:$t(n,e),ssim:_t(n,e),peakinessBefore:r?r.peakiness:NaN,peakinessAfter:o?o.peakiness:NaN,before:r,after:o}}function z(){return new Promise(t=>{let e=!1,n=()=>{e||(e=!0,t())};requestAnimationFrame(()=>setTimeout(n,0)),setTimeout(n,60)})}async function Ht(t,e,n){let r=performance.now(),o={...V[e.strength]};e.quality!==null?o.quality=Math.max(1,Math.min(100,Math.round(e.quality))):e.preserveResolution&&(o.quality=Math.max(o.quality,W));let i=e.seed??Math.random()*2147483647|0,a=new Q(i);n("geometry"),await z();let u=vt(t,o,a,e.rescale,e.preserveResolution);n("optics"),await z(),u=wt(u,o,a),n("sensor"),await z(),u=Et(u,o,a),n("isp"),await z(),u=Tt(u,o,a),n("jpeg"),await z();let{img:l,blob:s}=await Lt(u,o.quality,e.jpegPasses),p=Ft(t,l);return{img:l,blob:s,report:p,seed:i,elapsedMs:performance.now()-r}}var Pt=4e7,v=t=>{let e=document.getElementById(t);if(!e)throw new Error(`missing #${t}`);return e},c={viewport:v("viewport"),dropzone:v("dropzone"),compare:v("compare"),before:v("canvasBefore"),after:v("canvasAfter"),afterClip:v("afterClip"),wipe:v("wipe"),wipeRange:v("wipeRange"),scrim:v("scrim"),scrimText:v("scrimText"),path:v("path"),fileInput:v("fileInput"),pickBtn:v("pickBtn"),segStrength:v("segStrength"),segScale:v("segScale"),segPasses:v("segPasses"),quality:v("quality"),qualityOut:v("qualityOut"),qualityAuto:v("qualityAuto"),preserve:v("preserve"),preserveHint:v("preserveHint"),pinCamera:v("pinCamera"),seedHint:v("seedHint"),mPsnr:v("mPsnr"),mSsim:v("mSsim"),mSize:v("mSize"),mDims:v("mDims"),mTime:v("mTime"),specBefore:v("specBefore"),specAfter:v("specAfter"),pkBefore:v("pkBefore"),pkAfter:v("pkAfter"),download:v("download"),rerun:v("rerun"),reset:v("reset"),toast:v("toast")},b={source:null,sourceName:"image",strength:"medium",scale:1,quality:null,passes:1,seed:null,preserveResolution:!0,busy:!1,queued:!1,objectUrl:null},qt;function Dt(t){c.toast.textContent=t,c.toast.hidden=!1,window.clearTimeout(qt),qt=window.setTimeout(()=>{c.toast.hidden=!0},5200)}function Bt(t){let e=Array.from(c.path.querySelectorAll("li")),n=t?xt.indexOf(t):-1;e.forEach((r,o)=>{r.classList.toggle("active",o===n),r.classList.toggle("done",n>=0&&o<n)})}function at(){c.path.querySelectorAll("li").forEach(t=>t.classList.remove("active","done"))}function $(t,e="Working"){b.busy=t,c.scrim.hidden=!t,c.scrimText.textContent=e}function Qt(t){return t<1024*1024?`${Math.round(t/1024)}`:`${(t/(1024*1024)).toFixed(2)}`}function Vt(t){return t<1024*1024?"KB":"MB"}var st=[[11,13,17],[64,26,78],[192,97,216],[255,235,255]],it=[[11,13,17],[22,76,72],[69,207,196],[233,255,251]];function Wt(t,e){let r=(e<=0?0:e>=1?1:e)*(t.length-1),o=Math.min(t.length-2,Math.floor(r)),i=r-o,a=t[o],u=t[o+1];return[a[0]+(u[0]-a[0])*i,a[1]+(u[1]-a[1])*i,a[2]+(u[2]-a[2])*i]}function Yt(t){return Float64Array.from(t).sort()}function kt(t,e){let n=Math.min(t.length-1,Math.max(0,Math.round(e*(t.length-1))));return t[n]}function j(t,e,n,r,o){let i=t.getContext("2d");if(!i)return;if(!e){i.fillStyle="#0b0d11",i.fillRect(0,0,t.width,t.height);return}let a=e.n;t.width=a,t.height=a;let u=i.createImageData(a,a),l=o-r||1;for(let s=0;s<a*a;s++){let p=(e.plane[s]-r)/l,[m,f,g]=Wt(n,p),h=s*4;u.data[h]=m,u.data[h+1]=f,u.data[h+2]=g,u.data[h+3]=255}i.putImageData(u,0,0)}function Jt(t){let e=[t.before,t.after].filter(o=>o!==null),n=0,r=1;if(e.length){let o=Yt(e.length===1?e[0].plane:(()=>{let i=new Float64Array(e[0].plane.length+e[1].plane.length);return i.set(e[0].plane,0),i.set(e[1].plane,e[0].plane.length),i})());n=kt(o,.02),r=kt(o,.9999)}j(c.specBefore,t.before,st,n,r),j(c.specAfter,t.after,it,n,r),c.pkBefore.textContent=Number.isFinite(t.peakinessBefore)?t.peakinessBefore.toFixed(2):"\u2014",c.pkAfter.textContent=Number.isFinite(t.peakinessAfter)?t.peakinessAfter.toFixed(2):"\u2014"}function ot(t,e){t.querySelectorAll("button").forEach(n=>{n.setAttribute("aria-pressed",String(n.dataset.v===e))})}function Xt(){if(b.quality!==null)return b.quality;let t=V[b.strength].quality;return b.preserveResolution?Math.max(t,W):t}function k(){ot(c.segStrength,b.strength),ot(c.segScale,String(b.scale)),ot(c.segPasses,String(b.passes));let t=Xt();c.quality.value=String(t),c.qualityOut.textContent=String(t),c.qualityAuto.hidden=b.quality===null,c.preserve.checked=b.preserveResolution,c.preserveHint.classList.toggle("ctl-hint-warn",b.preserveResolution&&b.strength==="light"),c.seedHint.textContent=b.seed===null?"Each run gets a fresh noise pattern.":`Sensor #${b.seed}. Every image you convert now carries the same noise pattern.`}function lt(t,e){t.addEventListener("click",n=>{let r=n.target.closest("button[data-v]");r&&(e(r.dataset.v),k(),U())})}var Ct,N=0;function U(){b.source&&(window.clearTimeout(Ct),Ct=window.setTimeout(()=>void ct(),140))}async function ct(){if(!b.source)return;if(b.busy){b.queued=!0;return}let t=N;$(!0),at();let e={strength:b.strength,quality:b.quality,rescale:b.scale,jpegPasses:b.passes,seed:b.seed,preserveResolution:b.preserveResolution};try{let n=await Ht(b.source,e,Bt);if(t!==N)return;Bt(null),c.path.querySelectorAll("li").forEach(r=>r.classList.add("done")),et(c.after,n.img),Jt(n.report),c.mPsnr.innerHTML=`${n.report.psnr.toFixed(1)}<span class="unit">dB</span>`,c.mSsim.textContent=n.report.ssim.toFixed(3),c.mSize.innerHTML=`${Qt(n.blob.size)}<span class="unit">${Vt(n.blob.size)}</span>`,c.mDims.textContent=`${n.img.w}\xD7${n.img.h}`,c.mTime.textContent=`${Math.round(n.elapsedMs)} ms`,b.objectUrl&&URL.revokeObjectURL(b.objectUrl),b.objectUrl=URL.createObjectURL(n.blob),c.download.href=b.objectUrl,c.download.download=`${b.sourceName}_recaptured.jpg`,c.download.hidden=!1,c.rerun.disabled=!1,c.reset.disabled=!1}catch(n){if(t!==N)return;at(),Dt(n instanceof Error?n.message:String(n))}finally{$(!1),b.queued&&(b.queued=!1,t===N&&U())}}function Kt(t){return(t.replace(/\.[^.]+$/,"").replace(/[^\w .-]+/g,"").trim()||"image").slice(0,60)}async function ut(t){N++,b.queued=!1,$(!0,"Decoding");try{let e=await tt(t);if(e.w*e.h>Pt)throw new Error(`That image is ${e.w}\xD7${e.h}. The in-page pipeline caps out at ${Pt/1e6} MP \u2014 use the command-line version for anything larger.`);b.source=e,b.sourceName=Kt(t.name),et(c.before,e),c.after.style.aspectRatio=`${e.w} / ${e.h}`,c.dropzone.hidden=!0,c.compare.hidden=!1,$(!1),await ct()}catch(e){$(!1),Dt(e instanceof Error?e.message:String(e))}}function mt(t){if(!t)return null;for(let e of Array.from(t))if(e.type.startsWith("image/"))return e;return t.length?t[0]:null}function Zt(){N++,b.queued=!1,b.source=null,b.objectUrl&&(URL.revokeObjectURL(b.objectUrl),b.objectUrl=null),c.compare.hidden=!0,c.dropzone.hidden=!1,c.download.hidden=!0,c.rerun.disabled=!0,c.reset.disabled=!0,at(),c.mPsnr.textContent="\u2014",c.mSsim.textContent="\u2014",c.mSize.textContent="\u2014",c.mDims.textContent="\u2014",c.mTime.textContent="",c.pkBefore.textContent="\u2014",c.pkAfter.textContent="\u2014",j(c.specBefore,null,st,0,1),j(c.specAfter,null,it,0,1),c.fileInput.value=""}function Nt(t){let e=Math.max(0,Math.min(100,t));c.afterClip.style.clipPath=`inset(0 0 0 ${e}%)`,c.wipe.style.left=`${e}%`}c.wipeRange.addEventListener("input",()=>Nt(Number(c.wipeRange.value)));c.pickBtn.addEventListener("click",()=>c.fileInput.click());c.viewport.addEventListener("click",t=>{b.source||t.target.closest("button")||c.fileInput.click()});c.fileInput.addEventListener("change",()=>{let t=mt(c.fileInput.files);t&&ut(t)});["dragenter","dragover"].forEach(t=>c.viewport.addEventListener(t,e=>{e.preventDefault(),c.viewport.classList.add("dragging")}));["dragleave","drop"].forEach(t=>c.viewport.addEventListener(t,e=>{e.preventDefault();let n=e.relatedTarget;t==="dragleave"&&n instanceof Node&&c.viewport.contains(n)||c.viewport.classList.remove("dragging")}));c.viewport.addEventListener("drop",t=>{let e=mt(t.dataTransfer?.files);e&&ut(e)});window.addEventListener("paste",t=>{let e=mt(t.clipboardData?.files);e&&(t.preventDefault(),ut(e))});lt(c.segStrength,t=>{b.strength=t});lt(c.segScale,t=>{b.scale=Number(t)});lt(c.segPasses,t=>{b.passes=Number(t)});c.quality.addEventListener("input",()=>{b.quality=Number(c.quality.value),k()});c.quality.addEventListener("change",()=>U());c.qualityAuto.addEventListener("click",()=>{b.quality=null,k(),U()});c.preserve.addEventListener("change",()=>{b.preserveResolution=c.preserve.checked,k(),U()});c.pinCamera.addEventListener("change",()=>{b.seed=c.pinCamera.checked?X():null,k(),U()});c.rerun.addEventListener("click",()=>{b.seed!==null&&(b.seed=X(),k()),ct()});c.reset.addEventListener("click",Zt);k();Nt(50);j(c.specBefore,null,st,0,1);j(c.specAfter,null,it,0,1);})();
+</script>
